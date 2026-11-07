@@ -47,7 +47,26 @@ export interface ManagedDocument {
   id: string
   name: string
   type: string
+  category: string
   size: number
   status: 'Ready' | 'Needs review'
   addedAt: string
+  verificationStatus: 'Not verified'
+}
+
+export interface GrantlySettings {
+  reminderDays: number
+  digestEnabled: boolean
+  language: 'en-US' | 'hi-IN' | 'mr-IN'
+  reducedMotion: boolean
+}
+
+export interface ScholarshipNotification {
+  id: string
+  title: string
+  message: string
+  date: string
+  kind: 'deadline' | 'application' | 'profile'
+  read: boolean
+  href: string
 }

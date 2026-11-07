@@ -1,21 +1,21 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { AnimatePresence, motion } from 'framer-motion'
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import {
-  ArrowLeft, ArrowRight, ArrowUpRight, Award, Bell, BookOpen,
+  ArrowLeft, ArrowRight, ArrowUpRight, Award, Bell, BookOpen, Calculator,
   Bookmark, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft,
   ChevronRight, CircleHelp, Clock3, FileCheck2, FileText, Filter, GraduationCap, Heart,
-  House, LogOut, Menu, Moon, MoreHorizontal, Plus, Search, Send, ShieldCheck, Sparkles,
-  Sun, Upload, UserRound, Wallet, X, Zap,
+  House, LogOut, Menu, Mic, Moon, MoreHorizontal, ScanLine, Search, Send, Settings, ShieldCheck, Sparkles,
+  Sun, UserRound, Wallet, X, Zap,
 } from 'lucide-react'
 import { scholarships } from './data/scholarships'
 import ApplicationsPage from './pages/ApplicationsPage'
 import EmptyState from './components/EmptyState'
 import PageHeader from './components/PageHeader'
-import type { ApplicationStatus, EducationLevel, ManagedDocument, Scholarship, ScholarshipApplication, StudentProfile } from './types'
+import type { ApplicationStatus, EducationLevel, GrantlySettings, ManagedDocument, Scholarship, ScholarshipApplication, ScholarshipNotification, StudentProfile } from './types'
 import { getDemoAssistantReply } from './utils/assistant'
 import { matchScholarships } from './utils/eligibility'
 import { formatDate } from './utils/format'
@@ -23,6 +23,13 @@ import { usePersistentState } from './hooks/usePersistentState'
 import './App.css'
 
 const ApplicationChart = lazy(() => import('./components/ApplicationChart'))
+const VoiceAssistantPage = lazy(() => import('./pages/VoiceAssistantPage'))
+const FinancialPlannerPage = lazy(() => import('./pages/FinancialPlannerPage'))
+const ProfilePage = lazy(() => import('./pages/ProfilePage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const NotificationsPage = lazy(() => import('./pages/NotificationsPage'))
+const DocumentScannerPage = lazy(() => import('./pages/DocumentScannerPage'))
+const DocumentVaultPage = lazy(() => import('./pages/DocumentVaultPage'))
 
 const profileSeed: StudentProfile = {
   name: 'Alex Morgan',
@@ -36,6 +43,7 @@ const profileSeed: StudentProfile = {
   familyIncome: 450000,
   percentage: 82,
 }
+const settingsSeed: GrantlySettings = { reminderDays: 14, digestEnabled: true, language: 'en-US', reducedMotion: false }
 
 const applicationSeed: ScholarshipApplication[] = [
   { id: 'app-seed-1', scholarshipId: 'bright-minds', status: 'Under Review', updatedAt: '2026-10-24', history: [{ status: 'Draft', updatedAt: '2026-10-04' }, { status: 'Applied', updatedAt: '2026-10-12' }, { status: 'Under Review', updatedAt: '2026-10-24' }] },
@@ -86,17 +94,24 @@ function Platform() {
   const [user, setUser] = usePersistentState<{ name: string; email: string } | null>('grantly-user', null)
   const [savedIds, setSavedIds] = usePersistentState<string[]>('grantly-saved', ['bright-minds', 'women-in-design'])
   const [applications, setApplications] = usePersistentState<ScholarshipApplication[]>('grantly-applications', applicationSeed)
+  const [recentViewedIds, setRecentViewedIds] = usePersistentState<string[]>('grantly-recently-viewed', [])
   const [documents, setDocuments] = usePersistentState<ManagedDocument[]>('grantly-documents', [])
+  const [settings, setSettings] = usePersistentState<GrantlySettings>('grantly-settings', settingsSeed)
+  const [readNotificationIds, setReadNotificationIds] = usePersistentState<string[]>('grantly-read-notifications', [])
+  const [sessionFiles, setSessionFiles] = useState<Record<string, File>>({})
   const [reminders, setReminders] = usePersistentState<string[]>('grantly-reminders', [])
   const [darkMode, setDarkMode] = usePersistentState<boolean>('grantly-dark', false)
   const [toast, setToast] = useState('')
   const navigate = useNavigate()
   const location = useLocation()
-  const fileInput = useRef<HTMLInputElement>(null)
-
+  const [todayISO] = useState(() => new Date().toISOString().slice(0, 10))
   useEffect(() => {
     document.documentElement.dataset.theme = darkMode ? 'dark' : 'light'
   }, [darkMode])
+
+  useEffect(() => {
+    document.documentElement.dataset.reduceMotion = settings.reducedMotion ? 'true' : 'false'
+  }, [settings.reducedMotion])
 
   useEffect(() => {
     if (!toast) return
@@ -107,6 +122,12 @@ function Platform() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [location.pathname])
+
+  useEffect(() => {
+    const scholarshipId = location.pathname.match(/^\/scholarships\/([^/]+)$/)?.[1]
+    if (!scholarshipId || !scholarships.some((scholarship) => scholarship.id === scholarshipId)) return
+    setRecentViewedIds((current) => [scholarshipId, ...current.filter((id) => id !== scholarshipId)].slice(0, 5))
+  }, [location.pathname, setRecentViewedIds])
 
   const toggleSaved = (id: string) => {
     setSavedIds((current) => current.includes(id) ? current.filter((saved) => saved !== id) : [...current, id])
@@ -134,19 +155,28 @@ function Platform() {
   }
 
   const addDocument = (file: File, type: string) => {
+    const id = crypto.randomUUID()
     setDocuments((current) => [{
-      id: crypto.randomUUID(),
+      id,
       name: file.name,
       type,
+      category: type,
       size: file.size,
       status: 'Needs review',
       addedAt: new Date().toISOString().slice(0, 10),
+      verificationStatus: 'Not verified',
     }, ...current])
-    setToast('File name added. The file itself was not uploaded or stored.')
+    setSessionFiles((current) => ({ ...current, [id]: file }))
+    setToast('Document added to your session-only vault. File contents are not saved to local storage.')
+    return id
   }
 
   const deleteDocument = (id: string) => {
     setDocuments((current) => current.filter((document) => document.id !== id))
+    setSessionFiles((current) => {
+      const { [id]: _removed, ...remaining } = current
+      return remaining
+    })
     setToast('Document entry removed.')
   }
 
@@ -166,25 +196,38 @@ function Platform() {
     setUser(nextUser)
     setProfile((current) => ({ ...current, name, email }))
     setToast(`Welcome${name ? `, ${name.split(' ')[0]}` : ''}! Demo sign-in successful.`)
-    navigate('/dashboard')
+    const destination = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname
+    navigate(destination ?? '/dashboard', { replace: true })
   }
 
   const logout = () => {
     setUser(null)
+    setSessionFiles({})
     setToast('You have signed out of the demo account.')
     navigate('/')
   }
 
   const pageProps = {
-    profile, user, savedIds, applications, documents, reminders, onSave: toggleSaved,
+    profile, user, savedIds, applications, documents, reminders, recentViewedIds, onSave: toggleSaved,
     onAddApplication: addApplication, onUpdateApplication: updateApplication,
     onAddDocument: addDocument, onDeleteDocument: deleteDocument,
     onToggleReminder: toggleReminder, onNotify: setToast, onProfileChange: setProfile,
   }
 
   const publicPath = location.pathname === '/' || location.pathname === '/login' || location.pathname === '/register'
+  const notificationItems: ScholarshipNotification[] = [
+    ...scholarships.filter((item) => daysLeft(item.deadline) >= 0 && (reminders.includes(item.id) || (settings.digestEnabled && daysLeft(item.deadline) <= settings.reminderDays)))
+      .map((item) => ({ id: `deadline-${item.id}`, title: 'Scholarship deadline', message: `${item.name} closes in ${daysLeft(item.deadline)} days.`, date: item.deadline, kind: 'deadline' as const, read: readNotificationIds.includes(`deadline-${item.id}`), href: `/scholarships/${item.id}` })),
+    ...applications.slice(0, 5).map((application) => {
+      const item = scholarships.find((scholarship) => scholarship.id === application.scholarshipId)
+      return { id: `application-${application.id}`, title: 'Application update', message: `${item?.name ?? 'Your scholarship'} is marked ${application.status}.`, date: application.updatedAt, kind: 'application' as const, read: readNotificationIds.includes(`application-${application.id}`), href: '/applications' }
+    }),
+    { id: 'profile-review', title: 'Profile-powered matches', message: 'Your student profile helps personalize opportunity recommendations.', date: todayISO, kind: 'profile', read: readNotificationIds.includes('profile-review'), href: '/profile' },
+  ]
+  const notifications = notificationItems.sort((a, b) => b.date.localeCompare(a.date))
   return (
-    <div className={`app-root${darkMode ? ' dark-mode' : ''}`}>
+    <MotionConfig reducedMotion={settings.reducedMotion ? 'always' : 'user'}>
+    <div className={`app-root${darkMode ? ' dark-mode' : ''}${settings.reducedMotion ? ' reduced-motion' : ''}`}>
       {publicPath ? (
         <Routes>
           <Route path="/" element={<LandingPage savedIds={savedIds} onSave={toggleSaved} />} />
@@ -195,21 +238,31 @@ function Platform() {
             completeLogin(values.name, values.email)
           }} />} />
         </Routes>
+      ) : !user ? (
+        <Navigate to="/login" replace state={{ from: location }} />
       ) : (
-        <AppShell user={user} profile={profile} applications={applications} reminders={reminders} darkMode={darkMode} onTheme={() => setDarkMode((mode) => !mode)} onLogout={logout}>
+        <AppShell user={user} profile={profile} applications={applications} notifications={notifications} darkMode={darkMode} onTheme={() => setDarkMode((mode) => !mode)} onLogout={logout}>
           <AnimatePresence mode="wait">
             <motion.div key={location.pathname} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
-              <Routes>
-                <Route path="/dashboard" element={<DashboardPage {...pageProps} />} />
-                <Route path="/scholarships" element={<FinderPage {...pageProps} />} />
-                <Route path="/scholarships/:id" element={<DetailsPage {...pageProps} />} />
-                <Route path="/eligibility" element={<EligibilityPage profile={profile} onProfileChange={setProfile} onNotify={setToast} />} />
-                <Route path="/applications" element={<ApplicationsPage applications={applications} onAdd={addApplication} onUpdate={updateApplication} />} />
-                <Route path="/documents" element={<DocumentsPage documents={documents} onUpload={addDocument} onDelete={deleteDocument} onUpdateStatus={updateDocumentStatus} fileInput={fileInput} />} />
-                <Route path="/deadlines" element={<DeadlinesPage reminders={reminders} onToggleReminder={toggleReminder} />} />
-                <Route path="/assistant" element={<AssistantPage profile={profile} savedIds={savedIds} />} />
-                <Route path="*" element={<DashboardPage {...pageProps} />} />
-              </Routes>
+              <Suspense fallback={<div className="page-loading" role="status"><span className="loading-dot" />Loading workspace…</div>}>
+                <Routes>
+                  <Route path="/dashboard" element={<DashboardPage {...pageProps} />} />
+                  <Route path="/scholarships" element={<FinderPage {...pageProps} />} />
+                  <Route path="/scholarships/:id" element={<DetailsPage {...pageProps} />} />
+                  <Route path="/eligibility" element={<EligibilityPage profile={profile} onProfileChange={setProfile} onNotify={setToast} />} />
+                  <Route path="/applications" element={<ApplicationsPage applications={applications} onAdd={addApplication} onUpdate={updateApplication} />} />
+                  <Route path="/documents" element={<DocumentVaultPage documents={documents} sessionFiles={sessionFiles} onUpload={addDocument} onDelete={deleteDocument} onUpdateStatus={updateDocumentStatus} />} />
+                  <Route path="/documents/scan" element={<DocumentScannerPage onSaveDocument={addDocument} onNotify={setToast} />} />
+                  <Route path="/deadlines" element={<DeadlinesPage reminders={reminders} onToggleReminder={toggleReminder} />} />
+                  <Route path="/assistant" element={<AssistantPage profile={profile} savedIds={savedIds} />} />
+                  <Route path="/voice" element={<VoiceAssistantPage language={settings.language} onLanguageChange={(language) => setSettings((current) => ({ ...current, language }))} onNotify={setToast} />} />
+                  <Route path="/planner" element={<FinancialPlannerPage applications={applications} onNotify={setToast} />} />
+                  <Route path="/profile" element={<ProfilePage profile={profile} onSave={setProfile} onNotify={setToast} />} />
+                  <Route path="/settings" element={<SettingsPage settings={settings} onSave={setSettings} onNotify={setToast} onTheme={() => setDarkMode((mode) => !mode)} darkMode={darkMode} />} />
+                  <Route path="/notifications" element={<NotificationsPage notifications={notifications} onMarkRead={(id) => setReadNotificationIds((current) => current.includes(id) ? current : [...current, id])} onMarkAllRead={() => setReadNotificationIds(notifications.map((notification) => notification.id))} />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                </Routes>
+              </Suspense>
             </motion.div>
           </AnimatePresence>
         </AppShell>
@@ -218,15 +271,16 @@ function Platform() {
         {toast && <motion.div className="toast" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }} role="status"><CheckCircle2 size={17} />{toast}<button aria-label="Dismiss notification" onClick={() => setToast('')}><X size={15} /></button></motion.div>}
       </AnimatePresence>
     </div>
+    </MotionConfig>
   )
 }
 
-function AppShell({ children, user, profile, applications, reminders, darkMode, onTheme, onLogout }: {
+function AppShell({ children, user, profile, applications, notifications, darkMode, onTheme, onLogout }: {
   children: React.ReactNode
   user: { name: string; email: string } | null
   profile: StudentProfile
   applications: ScholarshipApplication[]
-  reminders: string[]
+  notifications: ScholarshipNotification[]
   darkMode: boolean
   onTheme: () => void
   onLogout: () => void
@@ -242,8 +296,15 @@ function AppShell({ children, user, profile, applications, reminders, darkMode, 
     { to: '/applications', label: 'Applications', icon: FileCheck2 },
     { to: '/documents', label: 'My documents', icon: FileText },
     { to: '/deadlines', label: 'Deadlines', icon: CalendarDays },
+    { to: '/documents/scan', label: 'Document scanner', icon: ScanLine },
+    { to: '/voice', label: 'Voice assistant', icon: Mic },
+    { to: '/planner', label: 'Funding planner', icon: Calculator },
+    { to: '/notifications', label: 'Notifications', icon: Bell },
+    { to: '/profile', label: 'My profile', icon: UserRound },
+    { to: '/settings', label: 'Settings', icon: Settings },
   ]
-  const activeTitle = location.pathname.startsWith('/scholarships/') ? 'Scholarship details' : navItems.find((item) => item.to === location.pathname)?.label ?? (location.pathname === '/assistant' ? 'Grantly AI' : 'Overview')
+  const activeTitle = location.pathname.startsWith('/scholarships/') ? 'Scholarship details' : location.pathname === '/documents/scan' ? 'Document scanner' : navItems.find((item) => item.to === location.pathname)?.label ?? (location.pathname === '/assistant' ? 'Grantly AI' : 'Overview')
+  const unreadCount = notifications.filter((notification) => !notification.read).length
   return (
     <div className="workspace">
       {mobileOpen && <button className="mobile-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
@@ -263,8 +324,8 @@ function AppShell({ children, user, profile, applications, reminders, darkMode, 
         <header className="topbar">
           <div className="topbar-left"><button className="mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14} /><strong>{activeTitle}</strong></div></div>
           <div className="topbar-actions"><Link to="/scholarships" className="top-search"><Search size={16} /><span>Find a scholarship</span><kbd>⌘ K</kbd></Link>
-            <div className="notification-wrap"><button className="icon-button notification-button" aria-label="Notifications" onClick={() => setNotificationsOpen((open) => !open)}><Bell size={18} /><i /></button>
-              {notificationsOpen && <div className="notification-popover"><div className="popover-heading"><strong>Notifications</strong><span>{reminders.length ? `${reminders.length} reminder${reminders.length === 1 ? '' : 's'}` : 'Today'}</span></div>{reminders.length ? reminders.map((id) => scholarships.find((item) => item.id === id)).filter((item): item is Scholarship => Boolean(item)).map((item) => <p key={item.id}><span className="notification-dot" />Reminder set for {item.name} · {prettyDate(item.deadline)}.</p>) : <><p><span className="notification-dot" />Bright Minds Fund has a deadline coming up soon.</p><p><span className="notification-dot mint-dot" />Your profile is ready for more matches.</p></>}<Link to="/deadlines" onClick={() => setNotificationsOpen(false)}>View all reminders <ArrowRight size={14} /></Link></div>}
+            <div className="notification-wrap"><button className="icon-button notification-button" aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ''}`} onClick={() => setNotificationsOpen((open) => !open)}><Bell size={18} />{unreadCount > 0 && <i />}</button>
+                {notificationsOpen && <div className="notification-popover"><div className="popover-heading"><strong>Notifications</strong><span>{unreadCount ? `${unreadCount} unread` : 'All caught up'}</span></div>{notifications.slice(0, 3).map((notification) => <p key={notification.id}><span className={`notification-dot${notification.read ? ' mint-dot' : ''}`} />{notification.message}</p>)}<Link to="/notifications" onClick={() => setNotificationsOpen(false)}>View all notifications <ArrowRight size={14} /></Link></div>}
             </div>
             <Link to="/assistant" className="top-avatar" aria-label="Open Grantly AI">{profile.name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</Link>
           </div>
@@ -371,10 +432,11 @@ function AuthPage({ mode, onLogin, onRegister }: {
   </div>
 }
 
-function DashboardPage({ profile, savedIds, applications, onSave }: {
+function DashboardPage({ profile, savedIds, applications, recentViewedIds, onSave }: {
   profile: StudentProfile
   savedIds: string[]
   applications: ScholarshipApplication[]
+  recentViewedIds: string[]
   onSave: (id: string) => void
 }) {
   const navigate = useNavigate()
@@ -384,6 +446,8 @@ function DashboardPage({ profile, savedIds, applications, onSave }: {
   const upcomingDeadlines = scholarships.filter((item) => daysLeft(item.deadline) >= 0).length
   const recommended = profileMatches.filter((match) => match.score >= 60).slice(0, 3).map((match) => match.scholarship)
   const recent = [...applications].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 3)
+  const recentScholarships = recentViewedIds.map((id) => scholarships.find((item) => item.id === id)).filter((item): item is Scholarship => Boolean(item))
+  const confirmedFunding = applications.filter((application) => application.status === 'Approved').reduce((total, application) => total + (scholarships.find((item) => item.id === application.scholarshipId)?.amount ?? 0), 0)
   const firstName = profile.name.split(' ')[0] || 'there'
   const greeting = today.getHours() < 12 ? 'Good morning' : today.getHours() < 18 ? 'Good afternoon' : 'Good evening'
   const chartData = [
@@ -401,10 +465,12 @@ function DashboardPage({ profile, savedIds, applications, onSave }: {
       { label: 'Saved for later', value: String(savedIds.length), note: 'keep your favorites close', icon: Heart, color: 'peach', link: '/scholarships' },
       { label: 'Applied scholarships', value: String(applications.filter((application) => application.status !== 'Draft').length), note: 'submitted or being reviewed', icon: FileCheck2, color: 'mint', link: '/applications' },
       { label: 'Upcoming deadlines', value: String(upcomingDeadlines), note: 'sample dates to keep in view', icon: CalendarDays, color: 'blue', link: '/deadlines' },
+      { label: 'Confirmed funding', value: money(confirmedFunding), note: 'approved demo awards', icon: Wallet, color: 'mint', link: '/planner' },
     ].map(({ label, value, note, icon: Icon, color, link }) => <Link key={label} to={link} className="stat-card"><div className={`stat-icon ${color}`}><Icon size={18} /></div><span className="stat-label">{label}</span><div className="stat-value">{value}<ArrowUpRight size={15} /></div><span className="stat-note">{note}</span></Link>)}</div>
     <div className="dashboard-columns"><section className="panel application-panel"><div className="panel-heading"><div><div className="eyebrow">KEEP AN EYE ON IT</div><h2>Application progress</h2></div><Link to="/applications" className="icon-link" aria-label="View all applications"><ArrowUpRight size={17} /></Link></div><div className="chart-area"><Suspense fallback={<div className="chart-donut chart-loading" aria-label="Loading application chart" />}><ApplicationChart data={chartData} total={applications.length} /></Suspense><div className="chart-legend">{chartData.map((item) => <div key={item.name}><i style={{ backgroundColor: item.fill }} /><span>{item.name}</span><strong>{item.count}</strong></div>)}</div></div><div className="panel-footnote"><span><span className="live-dot" /> Your journey at a glance</span><Link to="/applications">Open tracker <ArrowRight size={14} /></Link></div></section>
       <section className="panel deadline-panel"><div className="panel-heading"><div><div className="eyebrow">DON’T MISS A MOMENT</div><h2>Coming up next</h2></div><Link to="/deadlines" className="text-link">See calendar <ArrowRight size={14} /></Link></div><div className="mini-deadlines">{scholarships.filter((item) => daysLeft(item.deadline) > 0).sort((a, b) => a.deadline.localeCompare(b.deadline)).slice(0, 3).map((item) => <div className="mini-deadline" key={item.id}><div className="mini-date"><strong>{new Date(`${item.deadline}T00:00:00`).getDate()}</strong><span>{new Date(`${item.deadline}T00:00:00`).toLocaleDateString('en-IN', { month: 'short' })}</span></div><div className="mini-deadline-name"><strong>{item.name}</strong><span>{item.provider}</span></div><span className="days-pill">{daysLeft(item.deadline)} days</span></div>)}</div></section></div>
     <section className="recommended-section"><div className="panel-heading"><div><div className="eyebrow">PICKED FOR YOUR PROFILE</div><h2>Recommended for you</h2></div><Link to="/scholarships" className="text-link">View all <ArrowRight size={14} /></Link></div><div className="featured-grid dashboard-cards">{recommended.map((item, index) => <ScholarshipCard key={item.id} scholarship={item} saved={savedIds.includes(item.id)} onSave={onSave} index={index} />)}</div></section>
+    {recentScholarships.length > 0 && <section className="recommended-section"><div className="panel-heading"><div><div className="eyebrow">PICK UP WHERE YOU LEFT OFF</div><h2>Recently viewed</h2></div><Link to="/scholarships" className="text-link">Explore more <ArrowRight size={14} /></Link></div><div className="featured-grid dashboard-cards">{recentScholarships.map((item, index) => <ScholarshipCard key={item.id} scholarship={item} saved={savedIds.includes(item.id)} onSave={onSave} index={index} />)}</div></section>}
     <div className="dashboard-bottom"><section className="panel recent-panel"><div className="panel-heading"><div><div className="eyebrow">YOUR LATEST MOVES</div><h2>Recent activity</h2></div><Link to="/applications" className="icon-link"><ArrowUpRight size={17} /></Link></div>{recent.length ? <div className="activity-list">{recent.map((application) => {
       const scholarship = scholarships.find((item) => item.id === application.scholarshipId)
       return <div className="activity-item" key={application.id}><span className={`activity-icon status-${application.status.toLowerCase().replace(/\s/g, '-')}`}><FileCheck2 size={16} /></span><div><strong>{scholarship?.name ?? 'Scholarship application'}</strong><span>{application.status} · Updated {prettyDate(application.updatedAt)}</span></div><ArrowUpRight size={14} /></div>
@@ -506,26 +572,6 @@ function DetailsPage({ savedIds, applications, onSave, onAddApplication, onToggl
       <section className="panel detail-section"><div className="detail-heading"><span className="detail-icon peach"><FileText size={17} /></span><div><h2>Documents to prepare</h2><p>Possible checklist items for this demo opportunity.</p></div></div><div className="document-chip-list">{scholarship.documents.map((document) => <span key={document}><FileText size={14} />{document}</span>)}</div><Link to="/documents" className="text-link">Open document manager <ArrowRight size={14} /></Link></section>
       <section className="panel detail-section"><div className="detail-heading"><span className="detail-icon blue"><ArrowUpRight size={17} /></span><div><h2>Application instructions</h2><p>A safe starting point for your next steps.</p></div></div><ol className="application-steps"><li><span>1</span><p>Review the sample eligibility criteria and important dates above.</p></li><li><span>2</span><p>Confirm current requirements, dates, and the application link with {scholarship.provider}.</p></li><li><span>3</span><p>Prepare only the documents requested by the provider, then submit through its official channel.</p></li><li><span>4</span><p>Add your progress to the Grantly tracker. This demo does not submit applications.</p></li></ol></section></div>
       <aside className="details-side-column"><div className="panel detail-facts"><div className="eyebrow">AT A GLANCE</div><div className="fact-row"><span>Sample award</span><strong>{scholarship.amountLabel}</strong></div><div className="fact-row"><span>Application deadline</span><strong>{prettyDate(scholarship.deadline)}</strong></div><div className="fact-row"><span>Academic minimum</span><strong>{scholarship.minPercentage}%</strong></div><div className="fact-row"><span>Sample income limit</span><strong>{money(scholarship.maxIncome)}</strong></div><div className="fact-row"><span>Categories</span><strong>{scholarship.categories.join(', ')}</strong></div><button className="button button-primary full-button" onClick={() => onAddApplication(scholarship.id)}>{alreadyTracked ? 'Already in tracker' : 'Start an application'} <ArrowRight size={15} /></button><p className="demo-caption"><ShieldCheck size={13} /> Demo link unavailable. Confirm application steps with the provider.</p></div><div className="provider-note"><ShieldCheck size={18} /><div><strong>Keep it verified</strong><p>This is demo information, not a verified scholarship. Always use an official provider source before sharing details or applying.</p></div></div></aside></div></div>
-}
-
-function DocumentsPage({ documents, onUpload, onDelete, onUpdateStatus, fileInput }: {
-  documents: ManagedDocument[]
-  onUpload: (file: File, type: string) => void
-  onDelete: (id: string) => void
-  onUpdateStatus: (id: string, status: ManagedDocument['status']) => void
-  fileInput: React.RefObject<HTMLInputElement | null>
-}) {
-  const [documentType, setDocumentType] = useState('Academic marksheets')
-  const types = ['Income certificate', 'Academic marksheets', 'Identity document', 'Admission documents', 'Other']
-  const formatSize = (size: number) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / (1024 * 1024)).toFixed(1)} MB`
-  return <div className="documents-page"><PageHeader eyebrow="YOUR CHECKLIST, MADE SIMPLE" title="Document manager" description="Keep track of the paperwork you may need as you plan your next steps." action={<button className="button button-primary" onClick={() => fileInput.current?.click()}><Upload size={15} /> Add a document</button>} />
-    <div className="security-banner"><span className="security-icon"><ShieldCheck size={19} /></span><div><strong>Privacy first: your files stay yours.</strong><p>This demo stores only a file name, type, and size in your browser. The file itself is never uploaded or persisted. Avoid selecting sensitive documents on shared devices.</p></div></div>
-    <div className="document-manager-layout"><section className="panel document-list-panel"><div className="panel-heading"><div><div className="eyebrow">YOUR DOCUMENT CHECKLIST</div><h2>{documents.length} {documents.length === 1 ? 'document' : 'documents'}</h2></div><button className="icon-button" onClick={() => fileInput.current?.click()} aria-label="Add document"><Plus size={17} /></button></div>
-      <div className="document-type-picker"><label htmlFor="document-type">Document type</label><select id="document-type" value={documentType} onChange={(event) => setDocumentType(event.target.value)}>{types.map((type) => <option key={type}>{type}</option>)}</select><button className="button button-outline" onClick={() => fileInput.current?.click()}><Upload size={15} /> Choose file</button><input ref={fileInput} type="file" className="visually-hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file, documentType); event.currentTarget.value = '' }} /></div>
-      {documents.length ? <div className="managed-document-list">{documents.map((document) => <div className="managed-document" key={document.id}><span className="managed-doc-icon"><FileText size={18} /></span><div className="managed-doc-main"><strong title={document.name}>{document.name}</strong><span>{document.type} · {formatSize(document.size)} · Added {prettyDate(document.addedAt)}</span></div><button className={`document-status ${document.status === 'Ready' ? 'ready' : ''}`} title="Toggle document status" aria-label={`Mark ${document.name} ${document.status === 'Ready' ? 'needs review' : 'ready'}`} onClick={() => onUpdateStatus(document.id, document.status === 'Ready' ? 'Needs review' : 'Ready')}><i />{document.status}</button><button className="table-more" title="Remove document entry" aria-label={`Delete ${document.name}`} onClick={() => onDelete(document.id)}><X size={16} /></button></div>)}</div> : <EmptyState icon={FileText} title="A tidy checklist starts here" text="Add file names to keep track of the documents you may need. Nothing is uploaded." action={<button className="button button-outline" onClick={() => fileInput.current?.click()}><Upload size={15} /> Choose a file</button>} />}
-      <div className="document-type-grid">{types.slice(0, 4).map((type, index) => <div className="doc-check-item" key={type}><span className={`doc-check-icon doc-${index}`}><FileText size={15} /></span><div><strong>{type}</strong><span>{documents.filter((document) => document.type === type).length ? `${documents.filter((document) => document.type === type).length} added` : 'Not added yet'}</span></div><CheckCircle2 size={16} className={documents.some((document) => document.type === type) ? 'doc-check-active' : 'doc-check-inactive'} /></div>)}</div>
-    </section><aside className="panel document-tips"><div className="doc-tip-illustration"><div className="tip-paper"><FileCheck2 size={40} /></div><Sparkles size={17} className="tip-star" /></div><div className="eyebrow">A GENTLE REMINDER</div><h3>One step at a time.</h3><p>Requirements differ for every opportunity. Check the provider’s official instructions before sharing or submitting personal documents.</p><Link to="/scholarships" className="text-link">Explore opportunities <ArrowRight size={14} /></Link></aside></div>
-  </div>
 }
 
 function DeadlinesPage({ reminders, onToggleReminder }: { reminders: string[]; onToggleReminder: (id: string) => void }) {
